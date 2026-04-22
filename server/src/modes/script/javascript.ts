@@ -897,6 +897,100 @@ export async function getJavascriptMode(
       return action;
     },
     findDocumentSymbols(coffee_doc: TextDocument): DocumentSymbol[] {
+      const coffeeText = coffee_doc.getText();
+
+      // Try using CoffeeScript compiler AST (preferred)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const Coffee: any = require('coffeescript');
+        if (Coffee && typeof Coffee.compile === 'function') {
+          const ast = Coffee.compile(coffeeText, { ast: true });
+          if (ast) {
+            const seen = new WeakSet<any>();
+
+            function getLoc(node: any): Range | null {
+              const l = node?.locationData ?? node?.location ?? node?.name?.locationData ?? node?.name?.location;
+              if (!l) {
+                if (typeof node?.first_line === 'number') {
+                  const startLine = node.first_line;
+                  const startCol = node.first_column ?? 0;
+                  const endLine = node.last_line ?? startLine;
+                  const endCol = (node.last_column ?? node.first_column ?? 0) + 1;
+                  return Range.create(startLine, startCol, endLine, endCol);
+                }
+                return null;
+              }
+              const startLine = (l.first_line ?? l.startLine ?? l.start?.line) as number;
+              const startCol = (l.first_column ?? l.startColumn ?? l.start?.column ?? 0) as number;
+              const endLine = (l.last_line ?? l.endLine ?? l.end?.line ?? startLine) as number;
+              const endCol = ((l.last_column ?? l.endColumn ?? l.end?.column ?? startCol) as number) + 1;
+              return Range.create(startLine, startCol, endLine, endCol);
+            }
+
+            function getName(node: any): string | undefined {
+              if (!node) return undefined;
+              if (typeof node.name === 'string') return node.name;
+              if (node.name && typeof node.name.value === 'string') return node.name.value;
+              if (node.variable && node.variable.base && typeof node.variable.base.value === 'string') return node.variable.base.value;
+              if (node.variable && typeof node.variable.name === 'string') return node.variable.name;
+              if (node.id && node.id.base && typeof node.id.base.value === 'string') return node.id.base.value;
+              if (node?.literal && typeof node.literal.value === 'string') return node.literal.value;
+              return undefined;
+            }
+
+            function kindFromNode(node: any): SymbolKind {
+              const ctor = node && node.constructor && node.constructor.name ? String(node.constructor.name).toLowerCase() : '';
+              if (ctor.includes('class')) return SymbolKind.Class;
+              if (ctor.includes('constructor')) return SymbolKind.Constructor;
+              if (ctor.includes('method')) return SymbolKind.Method;
+              if (ctor.includes('function') || ctor.includes('code') || ctor.includes('func')) return SymbolKind.Function;
+              if (ctor.includes('assign') || ctor.includes('value') || ctor.includes('var') || ctor.includes('literal')) return SymbolKind.Variable;
+              return SymbolKind.Object;
+            }
+
+            function collectAll(node: any): DocumentSymbol[] {
+              if (!node || seen.has(node)) return [];
+              seen.add(node);
+              const childSymbols: DocumentSymbol[] = [];
+              for (const key of Object.keys(node)) {
+                const val = node[key];
+                if (Array.isArray(val)) {
+                  for (const el of val) {
+                    childSymbols.push(...collectAll(el));
+                  }
+                } else if (val && typeof val === 'object') {
+                  childSymbols.push(...collectAll(val));
+                }
+              }
+              const name = getName(node);
+              const range = getLoc(node);
+              if (name && range) {
+                let selectionRange = range;
+                if (node.name) {
+                  const sel = getLoc(node.name);
+                  if (sel) selectionRange = sel;
+                }
+                return [{
+                  name,
+                  detail: '',
+                  kind: kindFromNode(node),
+                  range,
+                  selectionRange,
+                  children: childSymbols.length ? childSymbols : undefined
+                }];
+              }
+              return childSymbols;
+            }
+
+            const symbols = collectAll(ast) || [];
+            if (symbols.length) return symbols;
+          }
+        }
+      } catch (e) {
+        // ignore and fallback to TS navigation
+      }
+
+      // Fallback: TypeScript navigation + source maps (existing logic)
       const transpilation = transpile_service.result_by_uri.get(coffee_doc.uri)
       const { scriptDoc: js_doc, service } = updateCurrentCoffeescriptTextDocument(coffee_doc);
       if (!languageServiceIncludesFile(service, coffee_doc.uri)) {
