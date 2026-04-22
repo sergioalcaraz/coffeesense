@@ -75,7 +75,8 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       if (t.includes('constructor')) return SymbolKind.Constructor;
       if (t.includes('method')) return SymbolKind.Method;
       if (t.includes('function') || t.includes('code') || t.includes('lambda') || t.includes('func')) return SymbolKind.Function;
-      if (t.includes('assign') || t.includes('var') || t.includes('literal') || t.includes('value')) return SymbolKind.Variable;
+      if (t.includes('property')) return SymbolKind.Property;
+      if (t.includes('assign') || t.includes('var') || t.includes('value')) return SymbolKind.Variable;
       if (t.includes('module')) return SymbolKind.Module;
       return SymbolKind.Object;
     };
@@ -87,10 +88,18 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       if (t.includes('class')) return true;
       if (t.includes('method') || t.includes('classmethod')) return true;
       if (t.includes('constructor')) return true;
+      // include any function / code node (including anonymous functions / closures)
       if (t.includes('function') || t.includes('lambda') || t.includes('code') || t.includes('functionexpression')) return true;
+      // include object / property nodes so object literal structure can appear in outline
+      if (t.includes('object') || t.includes('property') || t.includes('objectexpression')) return true;
+
       const pt = parent ? (parent.type || parent.constructor?.name || '').toString().toLowerCase() : '';
       if (pt.includes('assign') || pt.includes('assignment') || pt.includes('assignmentexpression')) return true;
       if (parent && parent.variable) return true;
+
+      // assignments to this/@ should be considered property declarations
+      if (node.variable && node.variable.base && (node.variable.base.type === 'ThisExpression' || node.variable.base.type === 'This')) return true;
+
       return false;
     }
 
@@ -100,9 +109,31 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       if (seen.has(node)) return;
       seen.add(node);
 
-      // If node is a declaration-like node and has a name and a valid range, create a flat symbol
-      const name = getName(node);
+      const nodeType = (node.type || node.constructor?.name || '').toString().toLowerCase();
+
+      // Skip primitive literal nodes (null/boolean/number/string) to reduce outline noise.
+      // Their enclosing assignment or property will be collected instead.
+      if (nodeType.includes('literal') || nodeType.includes('null') || nodeType.includes('boolean') || nodeType.includes('numeric') || nodeType.includes('number') || nodeType.includes('string')) {
+        // Still traverse children (if any) but don't create a symbol for the literal itself
+        return;
+      }
+
+      // Determine a name for the node. Prefer explicit names; synthesize for anonymous functions
+      let name = getName(node);
       const range = toRange(node);
+
+      if (!name && nodeType.includes('function')) {
+        // synthesize a short name for closures like `function(param1, ...)`
+        const params = (node.params || node.parameters || []).map((p: any) => {
+          if (!p) return '';
+          if (typeof p === 'string') return p;
+          if (typeof p.name === 'string') return p.name;
+          if (typeof p.identifier === 'string') return p.identifier;
+          return '';
+        }).filter(Boolean).slice(0, 3);
+        name = params.length ? `function(${params.join(',')})` : 'function';
+      }
+
       if (name && range && isSymbolCandidate(node, parent)) {
         let selectionRange = (node.id && toRange(node.id)) || (node.key && toRange(node.key)) || range;
         // ensure selectionRange is contained in range
@@ -128,6 +159,7 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
         flat.push({ sym, start, end });
       }
 
+      // Always traverse children so object properties and nested functions are discovered
       for (const k of Object.keys(node)) {
         const v = node[k];
         if (Array.isArray(v)) {
