@@ -80,16 +80,41 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       return SymbolKind.Object;
     };
 
-    function collect(node: any) {
+    // eslint-disable-next-line no-inner-declarations
+    function isSymbolCandidate(node: any, parent: any): boolean {
+      if (!node) return false;
+      const t = (node.type || node.constructor?.name || '').toString().toLowerCase();
+      if (t.includes('class')) return true;
+      if (t.includes('method') || t.includes('classmethod')) return true;
+      if (t.includes('constructor')) return true;
+      if (t.includes('function') || t.includes('lambda') || t.includes('code') || t.includes('functionexpression')) return true;
+      const pt = parent ? (parent.type || parent.constructor?.name || '').toString().toLowerCase() : '';
+      if (pt.includes('assign') || pt.includes('assignment') || pt.includes('assignmentexpression')) return true;
+      if (parent && parent.variable) return true;
+      return false;
+    }
+
+    // eslint-disable-next-line no-inner-declarations
+    function collect(node: any, parent?: any) {
       if (!node || typeof node !== 'object') return;
       if (seen.has(node)) return;
       seen.add(node);
 
-      // If node has a name and a valid range, create a flat symbol
+      // If node is a declaration-like node and has a name and a valid range, create a flat symbol
       const name = getName(node);
       const range = toRange(node);
-      if (name && range) {
-        const selectionRange = (node.id && toRange(node.id)) || (node.key && toRange(node.key)) || range;
+      if (name && range && isSymbolCandidate(node, parent)) {
+        let selectionRange = (node.id && toRange(node.id)) || (node.key && toRange(node.key)) || range;
+        // ensure selectionRange is contained in range
+        const rStart = doc.offsetAt(range.start);
+        const rEnd = doc.offsetAt(range.end);
+        let sStart = doc.offsetAt(selectionRange.start);
+        let sEnd = doc.offsetAt(selectionRange.end);
+        if (sStart < rStart) sStart = rStart;
+        if (sEnd > rEnd) sEnd = rEnd;
+        if (sEnd < sStart) sEnd = sStart;
+        selectionRange = Range.create(doc.positionAt(sStart), doc.positionAt(sEnd));
+
         const sym: DocumentSymbol = {
           name,
           detail: (node.type || '') as string,
@@ -106,16 +131,16 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       for (const k of Object.keys(node)) {
         const v = node[k];
         if (Array.isArray(v)) {
-          for (const el of v) collect(el);
+          for (const el of v) collect(el, node);
         } else if (v && typeof v === 'object') {
-          collect(v);
+          collect(v, node);
         }
       }
     }
 
     collect(ast);
 
-    console.log('coffeeAstService: collected ' + flat.length + ' flat symbols');
+    logger.logDebug && logger.logDebug('coffeeAstService: collected ' + flat.length + ' flat symbols');
 
     if (flat.length === 0) return [];
 
@@ -127,21 +152,21 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
 
     for (const item of flat) {
       while (stack.length > 0) {
-        const top = stack[stack.length - 1];
+        const top = stack[stack.length - 1]!;
         if (item.start >= top.start && item.end <= top.end) break;
         stack.pop();
       }
       if (stack.length === 0) {
         root.push(item.sym);
       } else {
-        const parent = stack[stack.length - 1].sym;
+        const parent = stack[stack.length - 1]!.sym;
         parent.children = parent.children || [];
         parent.children.push(item.sym);
       }
       stack.push(item);
     }
 
-    console.log('coffeeAstService: returning ' + root.length + ' root symbols');
+    logger.logDebug && logger.logDebug('coffeeAstService: returning ' + root.length + ' root symbols');
 
     return root;
   } catch (e: any) {
