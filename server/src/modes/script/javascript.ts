@@ -24,6 +24,7 @@ import { getFileFsPath, getFilePath } from '../../utils/paths';
 import { NULL_SIGNATURE } from '../nullMode';
 import * as Previewer from './previewer';
 import { HighlightSpanKind } from 'typescript';
+import { logger } from '../../log';
 
 
 
@@ -902,7 +903,7 @@ export async function getJavascriptMode(
         const symbols = getDocumentSymbolsFromCoffee(coffee_doc);
         if (symbols && symbols.length) return symbols;
       } catch (e: any) {
-        logger.logDebug && logger.logDebug('coffeeAstService failed: ' + (e && e.message));
+        logger.logDebug('coffeeAstService failed: ' + (e && e.message));
       }
 
       // Fallback: TypeScript navigation + source maps (existing logic)
