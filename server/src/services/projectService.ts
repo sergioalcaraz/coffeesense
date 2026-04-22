@@ -14,6 +14,7 @@ import {
   TextDocumentPositionParams
 } from 'vscode-languageserver';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { DocumentSymbol } from 'vscode-languageserver-types';
 import { LanguageId } from '../embeddedSupport/embeddedSupport';
 import { LanguageModes } from '../embeddedSupport/languageModes';
 import { NULL_COMPLETION, NULL_HOVER, NULL_SIGNATURE } from '../modes/nullMode';
@@ -31,6 +32,7 @@ export interface ProjectService {
   onCompletionResolve(item: CompletionItem): Promise<CompletionItem>;
   onHover(params: TextDocumentPositionParams): Promise<Hover>;
   onDocumentHighlight(params: TextDocumentPositionParams): Promise<DocumentHighlight[]>;
+  onDocumentSymbols(params: { textDocument: { uri: string } }): Promise<DocumentSymbol[]>;
   onDefinition(params: TextDocumentPositionParams): Promise<Definition>;
   onReferences(params: TextDocumentPositionParams): Promise<Location[]>;
   onSignatureHelp(params: TextDocumentPositionParams): Promise<SignatureHelp | null>;
@@ -96,6 +98,23 @@ export async function createProjectService(
       }
       return [];
     },
+    async onDocumentSymbols({ textDocument }: { textDocument: { uri: string } }) {
+      const doc = documentService.getDocument(textDocument.uri)!;
+      const result: DocumentSymbol[] = [];
+      if (doc && doc.languageId === LANGUAGE_ID) {
+        for (const lmr of languageModes.getAllLanguageModeRangesInDocument(doc)) {
+          const mode = lmr.mode;
+          if (mode && mode.findDocumentSymbols) {
+            const symbols = mode.findDocumentSymbols(doc);
+            if (symbols && symbols.length) {
+              result.push(...symbols);
+            }
+          }
+        }
+      }
+      return result;
+    },
+
     async onDefinition({ textDocument, position }) {
       const doc = documentService.getDocument(textDocument.uri)!;
       const mode = languageModes.getModeAtPosition(doc, position);

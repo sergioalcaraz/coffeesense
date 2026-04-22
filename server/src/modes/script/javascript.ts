@@ -4,7 +4,7 @@ import {
   CodeAction, CodeActionContext, CodeActionKind, CompletionItem, CompletionItemKind, CompletionItemTag, CompletionList, Definition, Diagnostic,
   DiagnosticSeverity, DiagnosticTag, DocumentHighlight,
   DocumentHighlightKind, Hover, Location, MarkedString, MarkupContent, ParameterInformation, Position, Range, SignatureHelp,
-  SignatureInformation, TextEdit
+  SignatureInformation, TextEdit, DocumentSymbol, SymbolKind
 } from 'vscode-languageserver-types';
 import { URI } from 'vscode-uri';
 import { CoffeescriptDocumentRegions, LanguageId } from '../../embeddedSupport/embeddedSupport';
@@ -896,9 +896,66 @@ export async function getJavascriptMode(
       delete action.data;
       return action;
     },
+    findDocumentSymbols(coffee_doc: TextDocument): DocumentSymbol[] {
+      const transpilation = transpile_service.result_by_uri.get(coffee_doc.uri)
+      const { scriptDoc: js_doc, service } = updateCurrentCoffeescriptTextDocument(coffee_doc);
+      if (!languageServiceIncludesFile(service, coffee_doc.uri)) {
+        return [];
+      }
+      const fileFsPath = getFileFsPath(js_doc.uri);
+      const nav = service.getNavigationTree(fileFsPath);
+      if (!nav || !nav.childItems) return [];
+      const mapKind = (k: string) => {
+        switch ((k || '').toLowerCase()) {
+          case 'module': return SymbolKind.Module;
+          case 'class': return SymbolKind.Class;
+          case 'method': return SymbolKind.Method;
+          case 'function': return SymbolKind.Function;
+          case 'constructor': return SymbolKind.Constructor;
+          case 'property': return SymbolKind.Property;
+          case 'var':
+          case 'local':
+          case 'const':
+          case 'let':
+            return SymbolKind.Variable;
+          case 'interface': return SymbolKind.Interface;
+          case 'enum': return SymbolKind.Enum;
+          default: return SymbolKind.Object;
+        }
+      };
+      const convertNode = (node: any): DocumentSymbol | null => {
+        const span = (node.spans && node.spans.length) ? node.spans[0] : node.textSpan || node.nameSpan;
+        if (!span) return null;
+        let range = convertRange(js_doc, span);
+        let selectionRange = range;
+        if (node.nameSpan) selectionRange = convertRange(js_doc, node.nameSpan);
+        if (transpilation?.source_map) {
+          const coffee_range = transpile_service.range_js_to_coffee(transpilation, range, coffee_doc);
+          const coffee_selection = transpile_service.range_js_to_coffee(transpilation, selectionRange, coffee_doc);
+          if (coffee_range) range = coffee_range;
+          if (coffee_selection) selectionRange = coffee_selection;
+          else if (coffee_range) selectionRange = range;
+        } else {
+          return null;
+        }
+        const children = (node.childItems || []).map((c: any) => convertNode(c)).filter((c: any) => c) as DocumentSymbol[];
+        return {
+          name: node.text || node.kind || '',
+          detail: '',
+          kind: mapKind(node.kind),
+          range,
+          selectionRange,
+          children: children.length ? children : undefined
+        } as DocumentSymbol;
+      };
+      const symbols = (nav.childItems || []).map((c: any) => convertNode(c)).filter((s: any) => s) as DocumentSymbol[];
+      return symbols;
+    },
+
     onDocumentRemoved(document: TextDocument) {
       jsDocuments.onDocumentRemoved(document);
     },
+
     onDocumentChanged(filePath: string) {
       serviceHost.updateExternalDocument(filePath);
     },
