@@ -16,12 +16,12 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
     const ast = Coffee.compile(text, { ast: true });
     if (!ast) return [];
 
+    const flat: { sym: DocumentSymbol; start: number; end: number }[] = [];
     const seen = new WeakSet<any>();
 
     const toRange = (node: any): Range | null => {
       if (!node) return null;
 
-      // Prefer numeric offsets (range or start/end).
       if (Array.isArray(node.range) && typeof node.range[0] === 'number') {
         const start = node.range[0] as number;
         const end = node.range[1] as number;
@@ -32,10 +32,8 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
         return Range.create(doc.positionAt(node.start), doc.positionAt(node.end));
       }
 
-      // Babel-like loc: { start: { line, column }, end: { line, column } }
       const loc = node.loc || node.location || node.locationData || node.astLocation || node.rangeData;
       if (loc && loc.start && typeof loc.start.line === 'number') {
-        // ASTs often use 1-based line numbers; convert to 0-based for LSP
         const sLine = Math.max(0, (loc.start.line || 0) - 1);
         const sCol = loc.start.column ?? loc.start.column0 ?? 0;
         const eLine = Math.max(0, (loc.end?.line ?? loc.last_line ?? loc.start.line) - 1);
@@ -43,9 +41,7 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
         return Range.create(Position.create(sLine, sCol), Position.create(eLine, eCol));
       }
 
-      // Older jison-style locationData: first_line, first_column, last_line, last_column
       if (typeof node.first_line === 'number') {
-        // jison typically uses 0-based line numbers for first_line
         const sLine = node.first_line;
         const sCol = node.first_column ?? 0;
         const eLine = node.last_line ?? sLine;
@@ -60,6 +56,8 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       if (!node) return undefined;
       if (typeof node.name === 'string' && node.name.trim()) return node.name;
       if (node.name && typeof node.name.value === 'string') return node.name.value;
+      if (node.id && typeof node.id === 'object' && typeof node.id.name === 'string') return node.id.name;
+      if (node.key && typeof node.key === 'object' && typeof node.key.name === 'string') return node.key.name;
       if (node.variable && node.variable.base && typeof node.variable.base.value === 'string') return node.variable.base.value;
       if (node.variable && typeof node.variable.name === 'string') return node.variable.name;
       if (node.id && node.id.base && typeof node.id.base.value === 'string') return node.id.base.value;
@@ -82,48 +80,66 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       return SymbolKind.Object;
     };
 
-    function walk(node: any): DocumentSymbol[] {
-      if (!node || typeof node !== 'object') return [];
-      if (seen.has(node)) return [];
+    function collect(node: any) {
+      if (!node || typeof node !== 'object') return;
+      if (seen.has(node)) return;
       seen.add(node);
 
-      const childSymbols: DocumentSymbol[] = [];
-
-      for (const key of Object.keys(node)) {
-        const val = node[key];
-        if (Array.isArray(val)) {
-          for (const el of val) {
-            childSymbols.push(...walk(el));
-          }
-        } else if (val && typeof val === 'object') {
-          childSymbols.push(...walk(val));
-        }
-      }
-
+      // If node has a name and a valid range, create a flat symbol
       const name = getName(node);
       const range = toRange(node);
       if (name && range) {
-        let selectionRange = range;
-        if (node.name) {
-          const sel = toRange(node.name);
-          if (sel) selectionRange = sel;
-        }
-        const symbol: DocumentSymbol = {
+        const selectionRange = (node.id && toRange(node.id)) || (node.key && toRange(node.key)) || range;
+        const sym: DocumentSymbol = {
           name,
           detail: (node.type || '') as string,
           kind: kindFromNode(node),
           range,
           selectionRange,
-          children: childSymbols.length ? childSymbols : undefined
+          children: undefined
         };
-        return [symbol];
+        const start = doc.offsetAt(range.start);
+        const end = doc.offsetAt(range.end);
+        flat.push({ sym, start, end });
       }
 
-      return childSymbols;
+      for (const k of Object.keys(node)) {
+        const v = node[k];
+        if (Array.isArray(v)) {
+          for (const el of v) collect(el);
+        } else if (v && typeof v === 'object') {
+          collect(v);
+        }
+      }
     }
 
-    const symbols = walk(ast) || [];
-    return symbols;
+    collect(ast);
+
+    if (flat.length === 0) return [];
+
+    // Build hierarchy by range containment
+    flat.sort((a, b) => a.start - b.start || b.end - a.end);
+
+    const root: DocumentSymbol[] = [];
+    const stack: { sym: DocumentSymbol; start: number; end: number }[] = [];
+
+    for (const item of flat) {
+      while (stack.length > 0) {
+        const top = stack[stack.length - 1];
+        if (item.start >= top.start && item.end <= top.end) break;
+        stack.pop();
+      }
+      if (stack.length === 0) {
+        root.push(item.sym);
+      } else {
+        const parent = stack[stack.length - 1].sym;
+        parent.children = parent.children || [];
+        parent.children.push(item.sym);
+      }
+      stack.push(item);
+    }
+
+    return root;
   } catch (e: any) {
     logger.logDebug && logger.logDebug('coffeeAstService failed: ' + (e && e.message));
     return [];
