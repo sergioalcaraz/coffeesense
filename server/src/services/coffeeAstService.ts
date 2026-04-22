@@ -115,7 +115,7 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
 
     collect(ast);
 
-    logger.logDebug && logger.logDebug('coffeeAstService: collected ' + flat.length + ' flat symbols');
+    console.log('coffeeAstService: collected ' + flat.length + ' flat symbols');
 
     if (flat.length === 0) return [];
 
@@ -141,7 +141,7 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       stack.push(item);
     }
 
-    logger.logDebug && logger.logDebug('coffeeAstService: returning ' + root.length + ' root symbols');
+    console.log('coffeeAstService: returning ' + root.length + ' root symbols');
 
     return root;
   } catch (e: any) {
