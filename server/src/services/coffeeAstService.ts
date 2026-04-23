@@ -69,6 +69,39 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       return undefined;
     };
 
+    // Try to build a dotted name for member expressions (e.g. module.exports, exports.foo)
+    const getFullName = (node: any): string | undefined => {
+      if (!node || typeof node !== 'object') return undefined;
+
+      const tryGet = (n: any): string | undefined => {
+        if (!n) return undefined;
+        // direct name
+        const direct = getName(n);
+        if (direct) return direct;
+
+        // common shapes: base.property, object.property, variable.base + variable.name
+        const base = n.base || n.object || n.subject || n.receiver || n.left || (n.variable && n.variable.base);
+        const prop = n.property || n.propertyName || n.member || n.index || n.key || n.name;
+
+        const baseName = tryGet(base) || getName(base);
+        const propName = getName(prop) || (typeof prop === 'string' ? prop : undefined) || (Array.isArray(n.properties) && n.properties.length ? getName(n.properties[0]) : undefined);
+
+        if (baseName && propName) return `${baseName}.${propName}`;
+
+        // fallback: some nodes expose id/base.name
+        if (n.id && n.id.base && n.id.base.value) {
+          const idBase = n.id.base.value;
+          const idName = (n.id.name || n.id.base.name || n.id.value);
+          if (idBase && idName) return `${idBase}.${idName}`;
+        }
+
+        return undefined;
+      };
+
+      return tryGet(node);
+    };
+
+
     const kindFromNode = (node: any): SymbolKind => {
       const t = (node && (node.type || node.constructor?.name || '')).toString().toLowerCase();
       if (t.includes('class')) return SymbolKind.Class;
