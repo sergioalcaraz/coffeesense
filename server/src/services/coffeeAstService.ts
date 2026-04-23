@@ -125,8 +125,8 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       if (t.includes('function') || t.includes('lambda') || t.includes('code') || t.includes('functionexpression')) return true;
       // include object / property nodes so object literal structure can appear in outline
       if (t.includes('object') || t.includes('property') || t.includes('objectexpression')) return true;
-      // include ES module import declarations
-      if (t.includes('import')) return true;
+      // include ES module import and export declarations
+      if (t.includes('import') || t.includes('export')) return true;
 
       const pt = parent ? (parent.type || parent.constructor?.name || '').toString().toLowerCase() : '';
       if (pt.includes('assign') || pt.includes('assignment') || pt.includes('assignmentexpression')) return true;
@@ -239,6 +239,118 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
               detail: (node.type || '') as string,
               kind: SymbolKind.Module,
               range: importRange,
+              selectionRange,
+              children: undefined
+            };
+            flat.push({ sym, start: rStart, end: rEnd });
+          }
+        }
+      }
+
+      // Special-case: export declarations -> create symbols for exported bindings (ES modules)
+      if (nodeType.includes('export')) {
+        const specifiers = node.specifiers || node.exports || node.specifiersList || node.specifier || node.exported || [];
+        const source = node.source || node.from || node.module || node.path;
+        const decl = node.declaration || node.decl || node.declared || node.expression || node.value || node.right || node.default || node.exportedDecl;
+
+        const computeRangeFromChildren = (n: any): Range | null => {
+          if (!n || typeof n !== 'object') return null;
+          const localSeen = new WeakSet<any>();
+          const stackNodes: any[] = [n];
+          let minOffset = Number.POSITIVE_INFINITY;
+          let maxOffset = -1;
+          while (stackNodes.length) {
+            const cur = stackNodes.pop();
+            if (!cur || typeof cur !== 'object' || localSeen.has(cur)) continue;
+            localSeen.add(cur);
+            const r = toRange(cur);
+            if (r) {
+              const s = doc.offsetAt(r.start);
+              const e = doc.offsetAt(r.end);
+              if (s < minOffset) minOffset = s;
+              if (e > maxOffset) maxOffset = e;
+            }
+            for (const k of Object.keys(cur)) {
+              const v = cur[k];
+              if (Array.isArray(v)) {
+                for (const el of v) if (el && typeof el === 'object') stackNodes.push(el);
+              } else if (v && typeof v === 'object') {
+                stackNodes.push(v);
+              }
+            }
+          }
+          if (maxOffset >= 0) return Range.create(doc.positionAt(minOffset), doc.positionAt(maxOffset));
+          return null;
+        };
+
+        if (Array.isArray(specifiers) && specifiers.length) {
+          for (const spec of specifiers) {
+            const exported = spec.exported || spec.name || spec.local || spec.id || spec.variable || spec;
+            const exportName = getName(exported) || getName(spec) || getName(node) || (typeof exported === 'string' ? exported : undefined);
+            let exportRange = toRange(spec) || toRange(exported) || toRange(node) || computeRangeFromChildren(spec) || computeRangeFromChildren(exported) || computeRangeFromChildren(node);
+            if (exportName && exportRange) {
+              const sel = toRange(exported) || exportRange;
+              const rStart = doc.offsetAt(exportRange.start);
+              const rEnd = doc.offsetAt(exportRange.end);
+              let sStart = doc.offsetAt(sel.start);
+              let sEnd = doc.offsetAt(sel.end);
+              if (sStart < rStart) sStart = rStart;
+              if (sEnd > rEnd) sEnd = rEnd;
+              if (sEnd < sStart) sEnd = sStart;
+              const selectionRange = Range.create(doc.positionAt(sStart), doc.positionAt(sEnd));
+              const sym: DocumentSymbol = {
+                name: exportName,
+                detail: (source && (source.value || source.name || source.literal || source)) || (node.type || 'export'),
+                kind: SymbolKind.Module,
+                range: exportRange,
+                selectionRange,
+                children: undefined
+              };
+              flat.push({ sym, start: rStart, end: rEnd });
+              if (exported && typeof exported === 'object') seen.add(exported);
+            }
+          }
+        } else if (decl) {
+          const declName = getName(decl) || getName(node) || 'default';
+          let exportRange = toRange(node) || toRange(decl) || computeRangeFromChildren(decl) || computeRangeFromChildren(node);
+          if (exportRange) {
+            const sel = toRange(decl) || exportRange;
+            const rStart = doc.offsetAt(exportRange.start);
+            const rEnd = doc.offsetAt(exportRange.end);
+            let sStart = doc.offsetAt(sel.start);
+            let sEnd = doc.offsetAt(sel.end);
+            if (sStart < rStart) sStart = rStart;
+            if (sEnd > rEnd) sEnd = rEnd;
+            if (sEnd < sStart) sEnd = sStart;
+            const selectionRange = Range.create(doc.positionAt(sStart), doc.positionAt(sEnd));
+            let symKind: SymbolKind = SymbolKind.Variable;
+            const dt = (decl && (decl.type || decl.constructor?.name || '')).toString().toLowerCase();
+            if (dt.includes('class')) symKind = SymbolKind.Class;
+            else if (dt.includes('function') || dt.includes('lambda') || dt.includes('code')) symKind = SymbolKind.Function;
+            else if (dt.includes('object')) symKind = SymbolKind.Variable;
+            const sym: DocumentSymbol = {
+              name: declName,
+              detail: 'export default',
+              kind: symKind,
+              range: exportRange,
+              selectionRange,
+              children: undefined
+            };
+            flat.push({ sym, start: rStart, end: rEnd });
+            if (decl && typeof decl === 'object') seen.add(decl);
+          }
+        } else if (source) {
+          const modName = (source && (source.value || source.name || source.literal || source)) || getName(node);
+          let exportRange = toRange(node) || computeRangeFromChildren(node);
+          if (modName && exportRange) {
+            const rStart = doc.offsetAt(exportRange.start);
+            const rEnd = doc.offsetAt(exportRange.end);
+            const selectionRange = exportRange;
+            const sym: DocumentSymbol = {
+              name: String(modName),
+              detail: (node.type || 'export') as string,
+              kind: SymbolKind.Module,
+              range: exportRange,
               selectionRange,
               children: undefined
             };
