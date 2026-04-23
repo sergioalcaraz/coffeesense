@@ -157,7 +157,7 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       if (isAssignType) {
         const left = node.left || node.lhs || node.lvalue || node.id || node.variable || node.leftHandSide || node.target;
         const right = node.right || node.value || node.init || node.expression || node.rvalue || node.initializer || node.rightHandSide;
-        const leftName = getName(left) || getName(node);
+        const leftName = getFullName(left) || getName(left) || getName(node);
         const assignRange = toRange(node) || toRange(left) || toRange(right);
         if (leftName && assignRange) {
           const rt = (right && (right.type || right.constructor?.name || '')).toString().toLowerCase();
