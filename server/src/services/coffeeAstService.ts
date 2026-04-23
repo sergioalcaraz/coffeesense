@@ -307,7 +307,6 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
                 children: undefined
               };
               flat.push({ sym, start: rStart, end: rEnd });
-              if (exported && typeof exported === 'object') seen.add(exported);
             }
           }
         } else if (decl) {
@@ -337,7 +336,6 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
               children: undefined
             };
             flat.push({ sym, start: rStart, end: rEnd });
-            if (decl && typeof decl === 'object') seen.add(decl);
           }
         } else if (source) {
           const modName = (source && (source.value || source.name || source.literal || source)) || getName(node);
