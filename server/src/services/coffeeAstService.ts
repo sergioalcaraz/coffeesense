@@ -375,6 +375,13 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       }
 
       const parentType = parent ? (parent.type || parent.constructor?.name || '').toString().toLowerCase() : '';
+      // If this is an anonymous class/object exported as `export default`, synthesize a visible name
+      if (!name && nodeType.includes('class')) {
+        name = parentType.includes('export') ? 'default class' : 'class';
+      }
+      if (!name && nodeType.includes('object') && parentType.includes('export')) {
+        name = 'default object';
+      }
       const isRightOfAssignment = parentType.includes('assign') && ['right', 'value', 'init', 'expression', 'rvalue', 'initializer', 'rightHandSide'].includes(propName || '');
       const isLeftOfAssignment = parentType.includes('assign') && ['left', 'lhs', 'lvalue', 'leftHandSide', 'id', 'variable', 'target'].includes(propName || '');
 
