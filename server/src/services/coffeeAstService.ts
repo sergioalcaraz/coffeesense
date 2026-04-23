@@ -104,7 +104,7 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
     }
 
     // eslint-disable-next-line no-inner-declarations
-    function collect(node: any, parent?: any) {
+    function collect(node: any, parent?: any, propName?: string) {
       if (!node || typeof node !== 'object') return;
       if (seen.has(node)) return;
       seen.add(node);
@@ -114,8 +114,49 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       // Skip primitive literal nodes (null/boolean/number/string) to reduce outline noise.
       // Their enclosing assignment or property will be collected instead.
       if (nodeType.includes('literal') || nodeType.includes('null') || nodeType.includes('boolean') || nodeType.includes('numeric') || nodeType.includes('number') || nodeType.includes('string')) {
-        // Still traverse children (if any) but don't create a symbol for the literal itself
-        return;
+        return; // primitives don't become symbols themselves
+      }
+
+      // Special-case: assignment nodes -> create a symbol from the left-hand side
+      const isAssignType = nodeType.includes('assign') || nodeType.includes('assignment') || nodeType.includes('assignmentexpression');
+      if (isAssignType) {
+        const left = node.left || node.lhs || node.lvalue || node.id || node.variable || node.leftHandSide || node.target;
+        const right = node.right || node.value || node.init || node.expression || node.rvalue || node.initializer || node.rightHandSide;
+        const leftName = getName(left) || getName(node);
+        const assignRange = toRange(node) || toRange(left) || toRange(right);
+        if (leftName && assignRange) {
+          const rt = (right && (right.type || right.constructor?.name || '')).toString().toLowerCase();
+          let symKind = SymbolKind.Variable;
+          if (rt.includes('function') || rt.includes('lambda') || rt.includes('code') || rt.includes('functionexpression')) {
+            symKind = SymbolKind.Function;
+          } else if (rt.includes('object') || rt.includes('objectexpression') || rt.includes('objectliteral') || rt.includes('property')) {
+            symKind = SymbolKind.Variable;
+          }
+
+          const sel = toRange(left) || assignRange;
+          const rStart = doc.offsetAt(assignRange.start);
+          const rEnd = doc.offsetAt(assignRange.end);
+          let sStart = doc.offsetAt(sel.start);
+          let sEnd = doc.offsetAt(sel.end);
+          if (sStart < rStart) sStart = rStart;
+          if (sEnd > rEnd) sEnd = rEnd;
+          if (sEnd < sStart) sEnd = sStart;
+
+          const selectionRange = Range.create(doc.positionAt(sStart), doc.positionAt(sEnd));
+          const sym: DocumentSymbol = {
+            name: leftName,
+            detail: (right && right.type) || (node.type || '') as string,
+            kind: symKind,
+            range: assignRange,
+            selectionRange,
+            children: undefined
+          };
+          flat.push({ sym, start: rStart, end: rEnd });
+
+          // Mark left processed so the identifier itself is not emitted separately
+          if (left && typeof left === 'object') seen.add(left);
+        }
+        // continue traversal into right side to collect object properties / nested functions
       }
 
       // Determine a name for the node. Prefer explicit names; synthesize for anonymous functions
@@ -123,7 +164,6 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       const range = toRange(node);
 
       if (!name && nodeType.includes('function')) {
-        // synthesize a short name for closures like `function(param1, ...)`
         const params = (node.params || node.parameters || []).map((p: any) => {
           if (!p) return '';
           if (typeof p === 'string') return p;
@@ -134,43 +174,51 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
         name = params.length ? `function(${params.join(',')})` : 'function';
       }
 
-      if (name && range && isSymbolCandidate(node, parent)) {
-        let selectionRange = (node.id && toRange(node.id)) || (node.key && toRange(node.key)) || range;
-        // ensure selectionRange is contained in range
-        const rStart = doc.offsetAt(range.start);
-        const rEnd = doc.offsetAt(range.end);
-        let sStart = doc.offsetAt(selectionRange.start);
-        let sEnd = doc.offsetAt(selectionRange.end);
-        if (sStart < rStart) sStart = rStart;
-        if (sEnd > rEnd) sEnd = rEnd;
-        if (sEnd < sStart) sEnd = sStart;
-        selectionRange = Range.create(doc.positionAt(sStart), doc.positionAt(sEnd));
+      const parentType = parent ? (parent.type || parent.constructor?.name || '').toString().toLowerCase() : '';
+      const isRightOfAssignment = parentType.includes('assign') && ['right', 'value', 'init', 'expression', 'rvalue', 'initializer', 'rightHandSide'].includes(propName || '');
+      const isLeftOfAssignment = parentType.includes('assign') && ['left', 'lhs', 'lvalue', 'leftHandSide', 'id', 'variable', 'target'].includes(propName || '');
 
-        const sym: DocumentSymbol = {
-          name,
-          detail: (node.type || '') as string,
-          kind: kindFromNode(node),
-          range,
-          selectionRange,
-          children: undefined
-        };
-        const start = doc.offsetAt(range.start);
-        const end = doc.offsetAt(range.end);
-        flat.push({ sym, start, end });
+      if (name && range && isSymbolCandidate(node, parent)) {
+        // Avoid duplicating symbols for assignment lhs/rhs because assignment produced the symbol
+        if (isLeftOfAssignment) {
+          // skip identifier symbol; assignment already emitted it
+        } else if (isRightOfAssignment && (nodeType.includes('function') || nodeType.includes('lambda') || nodeType.includes('code') || nodeType.includes('identifier'))) {
+          // skip the RHS function/identifier symbol — assignment emitted it
+        } else {
+          let selectionRange = (node.id && toRange(node.id)) || (node.key && toRange(node.key)) || range;
+          const rStart = doc.offsetAt(range.start);
+          const rEnd = doc.offsetAt(range.end);
+          let sStart = doc.offsetAt(selectionRange.start);
+          let sEnd = doc.offsetAt(selectionRange.end);
+          if (sStart < rStart) sStart = rStart;
+          if (sEnd > rEnd) sEnd = rEnd;
+          if (sEnd < sStart) sEnd = sStart;
+          selectionRange = Range.create(doc.positionAt(sStart), doc.positionAt(sEnd));
+
+          const sym: DocumentSymbol = {
+            name,
+            detail: (node.type || '') as string,
+            kind: kindFromNode(node),
+            range,
+            selectionRange,
+            children: undefined
+          };
+          flat.push({ sym, start: rStart, end: rEnd });
+        }
       }
 
       // Always traverse children so object properties and nested functions are discovered
       for (const k of Object.keys(node)) {
         const v = node[k];
         if (Array.isArray(v)) {
-          for (const el of v) collect(el, node);
+          for (const el of v) collect(el, node, k);
         } else if (v && typeof v === 'object') {
-          collect(v, node);
+          collect(v, node, k);
         }
       }
     }
 
-    collect(ast);
+    collect(ast, undefined, undefined);
 
     logger.logDebug && logger.logDebug('coffeeAstService: collected ' + flat.length + ' flat symbols');
 
