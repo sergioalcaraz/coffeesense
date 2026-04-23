@@ -92,6 +92,8 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
       if (t.includes('function') || t.includes('lambda') || t.includes('code') || t.includes('functionexpression')) return true;
       // include object / property nodes so object literal structure can appear in outline
       if (t.includes('object') || t.includes('property') || t.includes('objectexpression')) return true;
+      // include ES module import declarations
+      if (t.includes('import')) return true;
 
       const pt = parent ? (parent.type || parent.constructor?.name || '').toString().toLowerCase() : '';
       if (pt.includes('assign') || pt.includes('assignment') || pt.includes('assignmentexpression')) return true;
@@ -126,7 +128,7 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
         const assignRange = toRange(node) || toRange(left) || toRange(right);
         if (leftName && assignRange) {
           const rt = (right && (right.type || right.constructor?.name || '')).toString().toLowerCase();
-          let symKind = SymbolKind.Variable;
+          let symKind: SymbolKind = SymbolKind.Variable;
           if (rt.includes('function') || rt.includes('lambda') || rt.includes('code') || rt.includes('functionexpression')) {
             symKind = SymbolKind.Function;
           } else if (rt.includes('object') || rt.includes('objectexpression') || rt.includes('objectliteral') || rt.includes('property')) {
@@ -157,6 +159,59 @@ export function getDocumentSymbolsFromCoffee(doc: TextDocument): DocumentSymbol[
           if (left && typeof left === 'object') seen.add(left);
         }
         // continue traversal into right side to collect object properties / nested functions
+      }
+
+      // Special-case: import declarations -> create symbols for imported bindings (ES modules)
+      if (nodeType.includes('import')) {
+        const specifiers = node.specifiers || node.imports || node.specifiersList || node.specifier || [];
+        const source = node.source || node.from || node.module || node.path;
+        if (Array.isArray(specifiers) && specifiers.length) {
+          for (const spec of specifiers) {
+            const local = spec.local || spec.name || spec.id || spec.variable;
+            const localName = getName(local) || getName(spec) || getName(node) || (typeof spec === 'string' ? spec : undefined);
+            const importRange = toRange(spec) || toRange(local) || toRange(node);
+            if (localName && importRange) {
+              const sel = toRange(local) || importRange;
+              const rStart = doc.offsetAt(importRange.start);
+              const rEnd = doc.offsetAt(importRange.end);
+              let sStart = doc.offsetAt(sel.start);
+              let sEnd = doc.offsetAt(sel.end);
+              if (sStart < rStart) sStart = rStart;
+              if (sEnd > rEnd) sEnd = rEnd;
+              if (sEnd < sStart) sEnd = sStart;
+              const selectionRange = Range.create(doc.positionAt(sStart), doc.positionAt(sEnd));
+              const detail = (source && (source.value || source.name || source.literal || source)) || (node.type || '');
+              const sym: DocumentSymbol = {
+                name: localName,
+                detail: detail as string,
+                kind: SymbolKind.Module,
+                range: importRange,
+                selectionRange,
+                children: undefined
+              };
+              flat.push({ sym, start: rStart, end: rEnd });
+              if (local && typeof local === 'object') seen.add(local);
+            }
+          }
+        } else {
+          // side-effect import like `import 'module'` - emit module name if available
+          const modName = (source && (source.value || source.name || source.literal || source)) || getName(node);
+          const importRange = toRange(node);
+          if (modName && importRange) {
+            const rStart = doc.offsetAt(importRange.start);
+            const rEnd = doc.offsetAt(importRange.end);
+            const selectionRange = importRange;
+            const sym: DocumentSymbol = {
+              name: String(modName),
+              detail: (node.type || '') as string,
+              kind: SymbolKind.Module,
+              range: importRange,
+              selectionRange,
+              children: undefined
+            };
+            flat.push({ sym, start: rStart, end: rEnd });
+          }
+        }
       }
 
       // Determine a name for the node. Prefer explicit names; synthesize for anonymous functions
